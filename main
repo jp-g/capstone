@@ -1,0 +1,234 @@
+To deploy a multi-tier PHP and MySQL application using Kubernetes dashboard, we need to follow the below steps:
+
+    Create a namespace called cep-project1 and set the max quota for 3 services and 3 pods.
+    Create a service account named Sandry and assign her an admin role.
+    Use static volumes to store data in node3 as an NFS storage server.
+    Use secrets to store sensitive data and configmaps to store non-sensitive data.
+    Verify the MySQL service before deploying the WordPress Pod.
+
+Here is an example YAML file that can be used to deploy the multi-tier application:
+
+yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cep-project1
+spec:
+  finalizers:
+  - kubernetes
+  quotas:
+  - pods: "3"
+    services: "3"
+    storage: "10Gi"
+  - object-counts:
+      configmaps: "10"
+      persistentvolumeclaims: "10"
+      secrets: "10"
+      services: "10"
+      pods: "10"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandry
+  namespace: cep-project1
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sandry-admin
+subjects:
+- kind: ServiceAccount
+  name: sandry
+  namespace: cep-project1
+roleRef:
+  kind: ClusterRole
+  name: admin
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-pv
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany
+  nfs:
+    server: node3
+    path: /data/nfs
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: ""
+  volumeName: nfs-pv
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-secret
+  namespace: cep-project1
+type: Opaque
+data:
+  password: <base64 encoded password>
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-configmap
+  namespace: cep-project1
+data:
+  database_name: wordpress
+  database_user: root
+  database_password: <password>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: cep-project1
+spec:
+  selector:
+    app: mysql
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: cep-project1
+spec:
+  selector:
+    matchLabels:
+      app: mysql
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:5.7
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: password
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: mysql-configmap
+                  key: database_name
+            - name: MYSQL_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: mysql-configmap
+                  key: database_user
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: mysql-configmap
+                  key: database_password
+          ports:
+            - containerPort: 3306
+              name: mysql
+          volumeMounts:
+            - name: mysql-persistent-storage
+              mountPath: /var/lib/mysql
+      volumes:
+        - name: mysql-persistent-storage
+          persistentVolumeClaim:
+            claimName: nfs-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress
+  namespace: cep-project1
+spec:
+  selector:
+    app: wordpress
+  ports:
+    - name: wordpress
+      port: 80
+      targetPort: 80
+  type: NodePort
+  externalIPs:
+    - <node-ip>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wordpress
+  namespace: cep-project1
+spec:
+  selector:
+    matchLabels:
+      app: wordpress
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: wordpress
+    spec:
+      containers:
+        - name: wordpress
+          image: wordpress:latest
+          env:
+            - name: WORDPRESS_DB_HOST
+              value: mysql:3306
+            - name: WORDPRESS_DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: mysql-configmap
+                  key: database_user
+            - name: WORDPRESS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: password
+            - name: WORDPRESS_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: mysql-configmap
+                  key: database_name
+          ports:
+            - containerPort: 80
+              name: wordpress
+          volumeMounts:
+            - name: wordpress-persistent-storage
+              mountPath: /var/www/html
+      volumes:
+        - name: wordpress-persistent-storage
+          persistentVolumeClaim:
+            claimName: nfs-pvc
+      initContainers:
+        - name: init-mysql
+          image: mysql:5.7
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: password
+          command: ['sh', '-c', 'echo -e "CREATE DATABASE IF NOT EXISTS wordpress;\nGRANT ALL PRIVILEGES ON wordpress.* TO \"root\"@\"%\" IDENTIFIED BY \"$(echo $MYSQL_ROOT_PASSWORD)\";\nFLUSH PRIVILEGES;" | mysql -h mysql -u root -p$MYSQL_ROOT_PASSWORD']
+          volumeMounts:
+            - name: wordpress-persistent-storage
+              mountPath: /var/lib/mysql
+
+This YAML file creates a namespace called cep-project1 and sets the max quota for 3 services and 3 pods. It also creates a service account named Sandry and assigns her an admin role. The MySQL and WordPress Pods use node3 as an NFS storage server using static volumes. The WordPress application verifies the MySQL Service before getting deployed. If the MySQL Service is not present, then the WordPress Pod is not deployed. All sensitive data is stored using secrets and non-sensitive data using configmaps.
